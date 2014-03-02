@@ -1,5 +1,5 @@
 import sys, os, pprint
-import tkFileDialog
+import tkFileDialog, tkFont
 import re
 from Tkinter import *
 from datetime import date
@@ -7,6 +7,7 @@ import xor # for saving passwords
 import calendar
 from basis_retr import *
 import helpDialog
+import subprocess # for launching files
 #from scrollable_frame import *
 
 try: # for saving config data
@@ -14,9 +15,7 @@ try: # for saving config data
 except ImportError:
 	import pickle # fall back on Python version
 
-CONFIG_FILENAME = 'tk_band_retr.cfg'
-
-# Note: basis_retr.py already set python's console output buffer to zero.  Don't do again or crash.
+# Note: bsaw.py already set python's console output buffer to zero.  Don't do again or crash.
 def qw(s):
 	return tuple(s.split())
 
@@ -27,30 +26,41 @@ class BasisRetrApp(Frame):
 	#YEARS=qw('2013 2014 2015 2016 2017 2018')
 	DEFAULT_YEAR = '2014'
 	DATE_FMT = "%04d-%02d-%02d"
-	COL_NAMES = qw('Date Metrics Download Activity Download CSV Download')
-
+	COL_NAMES = qw('Date Metrics Download Sleep Download')
+	#COL_NAMES = qw('Date Metrics Download Activity Download Sleep Download')
+	#UI_ELEMENT_NAMES = qw('savedir loginid passwd month year save_pwd json_csv')
+	
 	def __init__(self, root=None,basepath="/"):
 		Frame.__init__(self)
 		self.logged_in = False
-		self.userid = None # should use BasisRetrApp's version, not duplicate it here?
+		
+		#self.userid = None # should use BasisRetrApp's version, not duplicate it here?
 		self.ui = {
 				'savedir':StringVar(), 
 				'loginid':StringVar(),
 				'passwd':StringVar(),
 				'month':StringVar(),
 				'year':StringVar(),
-				'save_pwd':IntVar()
+				'save_pwd':IntVar(),
+				'json_csv':StringVar()
 			}
+		
+		self.bretr = BasisRetr(loadconfig = True)
+		self.bretr.Status = self.Status
 		self.master.title( "Basis Data Retriever" )
 		self.createWidgets()
-		self.LoadConfig(CONFIG_FILENAME, self.ui)
+		self.bretr.cfg.Load()
+		#self.LoadConfig(CONFIG_FILENAME, self.ui)
+		self.SetUiFromConfig()
 		self.PopulateData()
 		
 	def OnClose(self):
+		self.GetConfigFromUI()
 		try:
-			self.SaveConfig(CONFIG_FILENAME, self.ui)
-		except:
-			pass
+			self.bretr.OnClose()
+			#self.SaveConfig(CONFIG_FILENAME, self.ui)
+		except Exception, v: # ignore if problem
+			print "Got Exception during save Config on close:",`v`
 		master.destroy()
 
 	def ShowHelp(self):
@@ -132,67 +142,76 @@ under the BSD license. See License.txt for specifics.""")
 		Button(config_frame, text="About", command = self.ShowAbout, padx=5).pack(side=RIGHT)
 		Label(config_frame, text=" ").pack(side=RIGHT)
 
-		# 2nd row: username and password
-		"""
-		config2_frame = Frame(self.master)
-		config2_frame.pack(side=TOP,fill=X)
-		Label( config2_frame, text=' MyBasis Login ID ').pack( side=LEFT)
-		self.loginid_text = Entry(config2_frame, width=20,  # path entry
-			textvariable = self.ui['loginid'])
-		self.loginid_text.pack(side=LEFT, fill=X, expand=20)
-
-		Label( config2_frame, text=' MyBasis Password ').pack( side=LEFT)
-		self.passwd_text = Entry(config2_frame, width=20,  show="*",
-			textvariable = self.ui['passwd'])
-		self.passwd_text.pack(side=LEFT, fill=X, expand=20)
-		Checkbutton(config2_frame, text='Save Passwd', variable=self.ui['save_pwd']).pack(side=LEFT)
-		"""
 		# Left-hand Column: Month-Year selectors
 		moyr_frame = Frame(self.master)
 		moyr_frame.pack(side=LEFT, fill=Y)
 		self.AddYearSelector(moyr_frame)
 		self.AddMonthSelector(moyr_frame)
+		self.AddJsonCsvSelector(moyr_frame)
+		self.AddAdditionalButtons(moyr_frame)
 		
 		# table for data and buttons to collect it
 		self.data_frame = Frame(self.master) 
 		self.data_frame.pack(side = LEFT, fill=Y)
 		self.status_bar = StatusBar(self.master)
-		#ScrollableFrame(master = self.master) #
-		#self.data_frame.UpdateScrollbars()
-		#self.PopulateData(data_frame)
-		#self.UpdateScrollbars()
+		# Gave up trying ScrollableFrame(master = self.master). Multiple columns is working fine.
 
 	def AddYearSelector(self, parent):
 		"""Create dropdown selector for years"""
 		Label(parent, text='Year').pack(side=TOP)
-		self.yr = OptionMenu(parent, self.ui['year'], *BasisRetrApp.YEARS)
-		self.yr.pack(side=TOP)
-		self.yr.bind("<ButtonRelease-1>", self.OnMoYrChange)
+		yr_option = OptionMenu(parent, self.ui['year'], *BasisRetrApp.YEARS)
+		yr_option.pack(side=TOP)
+		#yr_option.bind("<ButtonRelease-1>", self.OnMoYrChange)
 		self.ui['year'].set(BasisRetrApp.DEFAULT_YEAR)
-		Label(parent, text='Month').pack(side=TOP)
-
+		self.ui['year'].trace("w", self.OnUIChange)#OnOptionChange)
+		
 	def AddMonthSelector(self, parent):
 		"""Create Listbox for user to select a month"""
 		# calendar.mo_abbr has an extra entry at index zero, need to ignore that, hence the -1
+		Label(parent, text='Month').pack(side=TOP)
 		self.mo = Listbox(parent, listvariable=self.ui['month'], height=len(calendar.month_abbr)-1, width=5, font = ("Arial",12))
 		self.mo.pack(side=TOP)
-		self.mo.bind("<<ListboxSelect>>",self.OnMoYrChange)
+		self.mo.bind("<<ListboxSelect>>",self.OnUIChange)#OnMoYrChange)
 		# build listbox using month names
 		for i,mname in enumerate(calendar.month_abbr):
 			if i==0: continue # ignore month # 0--doesn't refer to anything
 			self.mo.insert(i-1, " "+mname)
-			
+
+	def AddJsonCsvSelector(self, parent):
+		"""Create dropdown selector for years"""
+		Label(parent, text='Work in').pack(side=TOP)
+		json_csv_option = OptionMenu(parent, self.ui['json_csv'], *['json', 'csv'])
+		json_csv_option.pack(side=TOP)
+		#json_csv_option.bind("<ButtonRelease-1>", self.OnMoYrChange)
+		#json_csv_option.bind("<<ListboxSelect>>", self.OnMoYrChange)
+		self.ui['json_csv'].set('csv')
+		self.ui['json_csv'].trace("w", self.OnUIChange)#OnOptionChange)
+
+	def AddAdditionalButtons(self, parent):
+		self.mo_act = Label(parent, text='act_siz')
+		self.mo_act.pack(side=TOP)
+		dl_actys = Button( parent, text = "D/L Acty's")
+		dl_actys.pack(side=TOP)
+		dl_actys.bind("<ButtonRelease-1>", self.OnGetActivitiesForMonth)
+		self.mo_sleep = Label(parent, text='slp_siz')
+		self.mo_sleep.pack(side=TOP)
+		dl_sleep = Button( parent, text = "D/L Sleep")
+		dl_sleep.pack(side=TOP)
+		dl_sleep.bind("<ButtonRelease-1>", self.OnGetSleepForMonth)
+		
 	def PopulateData(self, day=None):
 		"""Scan user-selected directory, show info on files for selected month, along with download buttons.  Can update UI for a single day only (by setting 'day' param) or for the entire month (day = None).""" 
 		# Data for month is shown in 2 columns.
 		# Left side (columns 0-6) is first half of month
 		# Right side (columns 7-13) is for 2nd half
-		
+
+		# yr and mo are  both strings from the UI-- coerce to int
 		yr, mo = int(self.GetUI('year')), int(self.GetUI('month')[0])
+		json_csv = self.GetUI('json_csv')
 		days_in_month = calendar.monthrange(yr, mo+1)[1]
 		
 		# First, retrieve the file info, filtered for only this month.
-		metrics_sizes, activities_sizes, csv_sizes = self.GetFileData(yr, mo,days_in_month)
+		metrics_sizes, activities_sizes, sleep_sizes = self.GetFileData(yr, mo,days_in_month, json_csv)
 		
 		# make date range: either entire month or for a single day if one was passed in.
 		if day: 
@@ -212,92 +231,180 @@ under the BSD license. See License.txt for specifics.""")
 			for (c, lbl) in enumerate(BasisRetrApp.COL_NAMES):
 				Label(fr, text=lbl).grid(row=0, column=coff+c)
 				
-			"""
-			Label(fr, text='Date').grid(row=0, column=0+c)
-			Label(fr, text='Metrics').grid(row=0, column=1+c)
-			Label(fr, text='D/L').grid(row=0, column=2+c)
-			Label(fr, text='Activity').grid(row=0, column=3+c)
-			Label(fr, text='D/L').grid(row=0, column=4+c)
-			Label(fr, text='CSV').grid(row=0, column=5+c)
-			Label(fr, text='D/L').grid(row=0, column=6+c)
-			"""
 		# Column and row offsets for dealing with columns
 		coff = 0 
 		roff = 1 # start at 1 to account for column heading
-
+		# TkFont.Font requires root frame ("master" here) to exist, so can't make it a class variable.
+		LINK_FONT= tkFont.Font(size=9,underline=1)
 		for r in date_range:
 			if r >= int(days_in_month/2): 
 				# shift offsets for right hand side columns
 				coff = 7
 				roff = -int(days_in_month/2)+1 # +1= account for header row
+				# if displaying a month in the future, prevent the rows from scrunching up vertically.
+				fr.grid_rowconfigure(r+roff, minsize = 25)
+				
 			# column zero: date
 			d = date(yr, mo+1, r+1)
 			dy = calendar.day_abbr[d.weekday()]
-
+			# highlight weekend days
+			bgcolor = d.weekday() in [5,6] and 'yellow' or None
 			# show dates in the future with gray text
 			today = date.today()
+			# show future dates as gray
 			fgcolor =  d > today and "gray" or None
 			
-			lbl= ("%04d-%02d-%02d "% (yr,mo+1,r+1))+dy
+			dt= ("%04d-%02d-%02d"% (yr,mo+1,r+1)) # also used for filenames in click handlers below
 			
-			Label(fr, text=lbl, borderwidth=0,fg=fgcolor).grid(row=r+roff, column=coff+0, sticky=W)
+			Label(fr, text=dt+" "+dy, anchor=W,fg=fgcolor, bg = bgcolor).grid(row=r+roff, column=coff+0, sticky=W+E+N+S )
 			
+			# dates in the future are empty rows
 			if fgcolor == "gray":
 				continue
+				
 			# column 1: metrics file size or "--" if no file
-			Label(fr, text=str(metrics_sizes[r] or "  --  ")).grid(row=r+roff, column=coff+1)
+			lbl = Label(fr, text=str(metrics_sizes[r] or "  --  "), font=metrics_sizes[r] and LINK_FONT or None, fg = metrics_sizes[r] and "blue" or None)
+			lbl.grid(row=r+roff, column=coff+1)
+			lbl.bind("<Button-1>",lambda e, d=dt:self.OpenFile("{}_basis_metrics.{}".format(d, json_csv)))
+			
 			# column 2: metrics download button
 			btext = 'metrics %02d' % (r+1)
-			b = Button(fr, text=btext)
-			b.grid(row=r+roff, column = coff+2)
+			b = Button(fr, text=btext,borderwidth=1)
+			b.grid(row=r+roff, column = coff+2, ipady=0)
 			b.bind("<ButtonRelease-1>", self.OnGetDayData)
-			
+
 			# column 3: activities file size or "--" if no file
-			Label(fr, text=str(activities_sizes[r] or "--"), borderwidth=2).grid(row=r+roff, column=coff+3)
+			lbl=Label(fr, text=str(sleep_sizes[r] or "--"))
+			lbl = Label(fr, text=str(sleep_sizes[r] or "  --  "), font=sleep_sizes[r] and LINK_FONT or None, fg = sleep_sizes[r] and "blue" or None)
+			lbl.grid(row=r+roff, column=coff+3)
+			lbl.bind("<Button-1>",lambda e, d=dt:self.OpenFile("{}_basis_sleep.{}".format(d, json_csv)))
+			
+			# column 4: activities download button
+			btext = 'sleep %02d' % (r+1)
+			b = Button(fr, text=btext,borderwidth=1)
+			b.grid(row=r+roff, column = coff+4)
+			b.bind("<ButtonRelease-1>", self.OnGetDayData)
+
+			"""
+			# column 3: activities file size or "--" if no file
+			lbl=Label(fr, text=str(activities_sizes[r] or "--"), borderwidth=2)
+			lbl.grid(row=r+roff, column=coff+3)
+			lbl.bind("<Button-1>",lambda e, d=dt:self.OpenFile("{}_basis_activities.{}".format(d, json_csv)))
+			
 			# column 4: activities download button
 			btext = 'activities %02d' % (r+1)
 			b = Button(fr, text=btext)
 			b.grid(row=r+roff, column = coff+4)
 			b.bind("<ButtonRelease-1>", self.OnGetDayData)
 
-			# column 5: CSV (metrics) file size or "--" if no file
-			Label(fr, text=str(csv_sizes[r] or "--"), borderwidth=2).grid(row=r+roff, column=coff+5)
+			# column 5: Sleep file size or "--" if no file
+			lbl = Label(fr, text=str(sleep_sizes[r] or "--"), borderwidth=2)
+			lbl.grid(row=r+roff, column=coff+5)
+			lbl.bind("<Button-1>",lambda e, d=dt:self.OpenFile("{}_basis_sleep.{}".format(d, json_csv)))
+			
 			# column 6: CSV download button
-			btext = 'csv %02d' % (r+1)
+			btext = 'sleep %02d' % (r+1)
 			b = Button(fr, text=btext)
 			b.grid(row=r+roff, column = coff+6)
-			b.bind("<ButtonRelease-1>", self.OnGetCsvData)
+			b.bind("<ButtonRelease-1>", self.OnGetDayData)
+			"""
+			# Update all-month statistics
+			fname = "{:04d}-{:02d}_basis_activities_summary.csv".format(yr, mo+1)
+			self.FormatSummaryCell(fname, self.mo_act)
+			"""
+			fpath = os.path.join(os.path.abspath(self.bretr.cfg.savedir), fname)
+			if os.path.isfile(fpath):
+				label = os.path.getsize(fpath)
+				#lbl = Label(fr, text=str(act_size or "  --  "), font=act_size and LINK_FONT or None, fg = act_size and "blue" or None)
+				self.mo_act['text']=label
+				self.mo_act['fg'] = "blue"
+				self.mo_act['font'] = LINK_FONT
+				self.mo_act.bind("<Button-1>",lambda e, d=dt:self.OpenFile(fname))
+			else:
+				label="--"
+				self.mo_act['text']=label
+				self.mo_act['fg'] = None
+				self.mo_act['font'] = None
+			"""
+			fname = "{:04d}-{:02d}_basis_sleep_summary.csv".format(yr, mo+1)
+			self.FormatSummaryCell(fname, self.mo_sleep)
+			"""fpath = os.path.join(os.path.abspath(self.bretr.cfg.savedir), fname)
+			if os.path.isfile(fpath):
+				label = os.path.getsize(fpath)
+			else:
+				label="--"
+			self.mo_sleep['text']=label
+			"""
+	def FormatSummaryCell(self, fname, button):
+		# TkFont.Font requires root frame ("master" here) to exist, so can't make it a class variable.
+		LINK_FONT= tkFont.Font(size=9,underline=1)
+		fpath = os.path.join(os.path.abspath(self.bretr.cfg.savedir), fname)
+		if os.path.isfile(fpath):
+			label = os.path.getsize(fpath)
+			#lbl = Label(fr, text=str(act_size or "  --  "), font=act_size and LINK_FONT or None, fg = act_size and "blue" or None)
+			button['text']=label
+			button['fg'] = "blue"
+			button['font'] = LINK_FONT
+			button.bind("<Button-1>",lambda e:self.OpenFile(fname))
+		else:
+			label="--"
+			button['text']=label
+			button['fg'] = None
+			button['font'] = None
 
+	def OpenFile(self, fname):
+		fpath = os.path.join(os.path.abspath(self.bretr.cfg.savedir), fname)
+		if not os.path.isfile(fpath):
+			self.Status("clicked '{}', but didn't open.".format(fpath))
+		else:
+			self.Status("Opening '{}'.".format(fname))
+			if 0:# ismac:
+				path = os.path.realpath(os.path.join(dir, fname))
+				findertools.launch(path)
+			else: # assume windows for now
+				# could also do a generic "open" for file.  Directories don't work here, though.
+				cmd = 'cmd /c "start '+escape_win_path_spaces(fpath)+'"'
+				try:
+					p = subprocess.Popen(cmd, shell = True)
+				except Exception as e:
+					print("Tried to open file but didn't: "+ `type(e)`+"=>"+`e`)
 
 	METRICS_RE= re.compile("metrics")
 	ACTIVITIES_RE = re.compile("activities")
-	CSV_RE = re.compile('\.csv')
-
-	def GetFileData(self, yr, mo, days_in_month):
+	SLEEP_RE = re.compile('sleep')
+	def GetFileData(self, yr, mo, days_in_month, json_csv):
 		"""Walk through directory (including subdirectories) and gather file sizes"""
+		#self.GetConfigFromUI()
 		top_folder = self.GetUI('savedir')
-		month_re= re.compile('%04d-%02d-(\d\d)' % (yr, mo+1))
+		#top_folder = self.bretr.cfg.savedir
+		YrMo_re= re.compile('%04d-%02d-(\d\d)' % (yr, mo+1))
+		type_re = re.compile('\.'+json_csv+'$')
 		# regexs for determining, from the filename, what kind of data is in the file 
 		metrics= [None]*days_in_month
 		activities = [None]*days_in_month
-		csv = [None]*days_in_month
+		sleep = [None]*days_in_month
 		for top_folder, dirs, files in os.walk(top_folder, topdown=False):
 			for name in files: # look for y-m match first
-				m = month_re.search(name)
-				if not m: continue 	# file is from another month
+				d = type_re.search(name)
+				m = YrMo_re.search(name)
+				if not m or not d: continue 	# file is from another month or not the right type
+					
 				day = int(m.group(1))
 				path = os.path.realpath(os.path.join(top_folder, name))
 				size = os.path.getsize(path)
+				#if name=="2014-02-02_basis_sleep.csv":
+				#	print "found name", name, BasisRetrApp.SLEEP_RE.search(name)
+
 				try:
 					if BasisRetrApp.METRICS_RE.search(name):
 						metrics[day-1] = size
 					if BasisRetrApp.ACTIVITIES_RE.search(name):
 						activities[day-1] = size
-					if BasisRetrApp.CSV_RE.search(name):
-						csv[day-1] = size
+					if BasisRetrApp.SLEEP_RE.search(name):
+						sleep[day-1] = size
 				except Exception, v:
 					self.Status("Error gathering metrics for day"+`day`+":",`v`)
-		return metrics, activities, csv
+		return metrics, activities, sleep
 
 	############################
 	##
@@ -311,10 +418,14 @@ under the BSD license. See License.txt for specifics.""")
 
 	def Login(self):
 		# first, gather data for login: email and password
+		self.GetConfigFromUI() # this does the right thing so that login works without any params
+		#email, passwd, savedir = cfg['loginid'], cfg['passwd'], cfg['savedir']
+		"""
 		email = self.ui['loginid'].get()
 		passwd = self.ui['passwd'].get()
 		savedir = self.ui['savedir'].get()
 		self.bretr = BasisRetr(email, passwd, savedir, self.userid)
+		"""
 		#try:
 		self.bretr.Login()
 		#except Exception, v:
@@ -322,67 +433,121 @@ under the BSD license. See License.txt for specifics.""")
 			
 	def OnGetDayData(self, evt):
 		"""Get either metrics or activities json data from Basis website.  For now, button name is how we get the date and type of data to download."""
-		btn = evt.widget.config('text')[-1]
+		
+		btn = evt.widget.config('text')[-1] # get the text shown on the button
 		type, day = btn[0], int(btn[1])
 		# Get button text as btn.config('text')[-1].  This returns a tuple split by spaces.  date num is last item in tuple.
-		month = self.GetUI('month')[0]+1 # correct zero-based month (0 = Jan)
-		year = int(self.GetUI('year'))
-		date = "%04d-%02d-%02d" % (year, month, day)
+		mo, yr = int(self.GetUI('month')[0]+1), int(self.GetUI('year'))
+		#month = cfg.month[0]+1 # correct zero-based month (0 = Jan)
+		#year = int(cfg.year)
+		date = "%04d-%02d-%02d" % (yr, mo, day)
 		self.Status("Checking Login")
-		self.CheckLogin() # ensure we're logged in
+		self.bretr.CheckLogin() # ensure we're logged in
 		self.Status("getting "+type+" for "+date)
 		# figure out which data to get
 		data = None
-#		try:
-		if type == 'metrics':
-			data = self.bretr.GetMetricsForDay(date)
-			fname = date+"_basis_metrics.json"
-		elif type == 'activities':
-			data = self.bretr.GetActivitiesForDay(date)
-			fname = date+"_basis_activities.json"
+		# filenames for json and csv
+		jfname = "{date}_basis_{type}.json".format(date=date, type=type)
+		jfpath = os.path.join(os.path.abspath(self.bretr.cfg.savedir), jfname)
+		cfname = "{date}_basis_{type}.csv".format(date=date, type=type)
+		cfpath = os.path.join(os.path.abspath(self.bretr.cfg.savedir), cfname)		
+		
+		do_csv = self.GetUI('json_csv') == 'csv'
+		have_json_for_csv = os.path.exists(jfpath) and do_csv
+		if have_json_for_csv: # have json data; just read it in
+			with open(jfpath, "r") as f:
+				data = f.read()
+				jdata = json.loads(data)
+				
+		# if needed, download json data from website and save to file
+		if not have_json_for_csv:
+			if type == 'metrics':
+				jdata = self.bretr.GetMetricsForDay(date)
+			elif type == 'activities':
+				jdata = self.bretr.GetActivitiesForDay(date)
+			#elif type == 'sleep':
+			#	jdata = self.bretr.GetSleepForDay(date)
+			elif type == 'sleep':
+				jdata = self.bretr.GetSleepEventsForDay(date)
+			# this should be an option
+			self.bretr.SaveData(json.dumps(jdata), jfname)
+			
+		cdata = None
+		if do_csv:
+			if type == 'metrics':
+				cdata = self.bretr.StartMetricsCSV()
+				cdata += self.bretr.AddMetricsCSV(jdata)
+			if type == 'activities':
+				cdata = self.bretr.StartActivitiesCSV()
+				cdata += self.bretr.AddActivitiesCSV(jdata)
+			if type == 'sleep':
+				cdata = self.bretr.StartSleepEventsCSV()
+				cdata += self.bretr.AddSleepEventsCSV(jdata)
+				#print "got docsv=",do_csv,"=",cdata
 #		except Exception, v:
 #			self.Status("Problem getting data from basis website:"+`v`)
-		if data:
-			self.bretr.SaveDataForDay(data, fname)
+		#if jdata:
+		#	print "getday, data=",json.dumps(jdata)[0:200]
+		#	self.bretr.SaveData(json.dumps(jdata), fname)
+		if cdata:
+			self.bretr.SaveData(cdata, cfname)
 			##$$ clean this up.  Pass entire path to above save method 
-			fpath = os.path.join(os.path.abspath(self.GetUI('savedir')), fname)
+			fpath = os.path.join(os.path.abspath(self.GetUI('savedir')), cfname)
 			self.Status("Saved "+type+" at "+fpath)
 			# Update data in list
 		self.PopulateData(day)
-
+		
 	def OnGetCsvData(self, evt):
 		"""Convert json metrics to csv format.  If json metrics not yet downloaded yet, then do that first and only save csv"""
+		#self.GetConfigFromUI() # get the text shown on the button
+		#cfg = self.bretr.cfg
 		btn = evt.widget.config('text')[-1]
 		type, day = btn[0], int(btn[1])
 		# Get button text as btn.config('text')[-1].  This returns a tuple split by spaces.  date num is last item in tuple.
-		month = self.GetUI('month')[0]+1 # correct zero-based month (0 = Jan)
-		year = int(self.GetUI('year'))
+		mo, yr = int(self.GetUI('month')[0]), int(self.GetUI('year'))
+		
+		#month = cfgmonth+1 # correct zero-based month (0 = Jan)
+		#year = int(cfg.year)
 		date = "%04d-%02d-%02d" % (year, month, day)
 
 		#first, read json file
 		fname = date+"_basis_metrics.json"
 		self.Status("getting "+type+" for "+date)
-		fpath = os.path.join(os.path.abspath(self.GetUI('savedir')), fname)
+		fpath = os.path.join(os.path.abspath(self.bretr.cfg.savedir), fname)
 
 		if not os.path.exists(fpath):
 			# download json first
 			self.CheckLogin()
-			json_data = self.bretr.GetMetricsForDay(date)
-			print "got json data"
+			json_data = self.bsaw.GetMetricsForDay(date)
+			self.Status("Got json data for ",date)
 		else: # just read the data from the exsiting file
 			with open(fpath, "r") as f:
 				data = f.read()
 			json_data = json.loads(data)
 		
 		fname = date + "_basis.csv"
-		fpath = os.path.join(os.path.abspath(self.GetUI('savedir')), fname)
+		fpath = os.path.join(os.path.abspath(self.bretr.cfg.savedir), fname)
 		SaveCsv(fpath, json_data)
-		self.Status("Saved CSV to "+fpath)
+		self.Status("Saved activities data to "+fpath)
 		self.PopulateData(day)
+
+	def OnGetActivitiesForMonth(self, evt):
+		"""Get a month's worth of activities"""
+		yr, mo = int(self.GetUI('year')), int(self.GetUI('month')[0])
+		#self.bretr = BasisRetr(email, passwd, savedir, self.userid)
+		#yr, mo = int(cfg.year), int(cfg.month[0])
+		self.bretr.GetActivityCsvForMonth(yr, mo)
+		self.PopulateData()
+
+	def OnGetSleepForMonth(self, evt):
+		"""Get a month's worth of sleep data"""
+		yr, mo = int(self.GetUI('year')), int(self.GetUI('month')[0])
+		self.bretr.GetSleepCsvForMonth(yr, mo)
+		self.PopulateData()
 
 	###########################
 	##
-	##		UI Helpers
+	##		UI Helpers and Event Handlers
 	##
 	def GetUI(self, label):
 		"""Get a widget's value based on the key name in self.ui"""
@@ -400,8 +565,12 @@ under the BSD license. See License.txt for specifics.""")
 		else:
 			return self.ui[label].get()
 
-	def OnMoYrChange(self, evt):
+	def OnUIChange(self, *args):#name, index, op):
+		"""Respond to UI context changes (year, month, json/csv) by redrawing table for month.  Different event handlers have different method signatures, but we ignore them (via *args) because we don't care."""
 		self.PopulateData()
+		
+	#def OnMoYrChange(self, evt):
+	#	self.PopulateData()
 
 	def Status(self, txt):
 		self.status_bar.set(txt)
@@ -420,6 +589,7 @@ under the BSD license. See License.txt for specifics.""")
 	##
 	##				Save and load config data
 	##
+	"""
 	def LoadConfig(self, fpath, ui):
 		try:
 			fh = file(fpath, "r")
@@ -430,21 +600,42 @@ under the BSD license. See License.txt for specifics.""")
 			return # return None if didn't load, so caller can add data (e.g., on first run) and save it later.
 		# TKinter is messy- there's no straightforward way to set a listbox via strVar() like the other UI elements.
 		# 		Need to handle them (i.e., month dropdown) separately 
-		for k,v in cfg.items():
+	"""
+	def SetUiFromConfig(self):
+		"""Set the value of each UI element from config"""
+		cfg = self.bretr.cfg#.__dict__
+		for k in self.ui.keys():
+			if not hasattr(cfg,k): continue # not in cfg: continue
+			v = getattr(cfg,k)
 			if k == 'month':
-				self.mo.selection_set(v)
-			elif k =='passwd': # decode from what was stored in file
-				p = xor.xor_crypt_string(v, decode=True)
-				ui[k].set(p)
-			elif k in ui:
-				ui[k].set(v)
+				self.mo.selection_set(v[0])
+			#elif k =='passwd': # decode from what was stored in file
+			#	p = xor.xor_crypt_string(v, decode=True)
+			#	ui[k].set(p)
+			elif k in self.ui.keys():
+				self.ui[k].set(v)
 		# userid (hex string unique to user) is not part of the ui, but is helpful to
 		# save between sessions
-		if 'userid' in cfg: 
-			self.userid = cfg['userid']
+		#if 'userid' in cfg: 
+		#	self.userid = cfg['userid']
 
-	def SaveConfig(self, fpath, cfg):
-		"""Save Config info before close"""
+	def GetConfigFromUI(self):
+		"""For each UI item, set config from the UI's value"""
+		cfg = self.bretr.cfg
+		for k, v in self.ui.items():
+			#print k, k in cfg.__dict__
+			if k not in cfg.__dict__:
+				continue
+			if k == 'month': # Tk handles listboxes differently than other UI element types
+				try:
+					setattr(cfg,k,self.mo.curselection()[0])
+				except:
+					pass
+			else:
+				setattr(cfg,k,v.get())
+
+	"""def SaveConfig(self, fpath, cfg):
+	#	Save Config info before close
 		fh = None
 		# turn StringVar, IntVar, etc. into dict
 		savecfg = {}
@@ -475,7 +666,7 @@ under the BSD license. See License.txt for specifics.""")
 		except IOError, v:
 			self.Status("didn't save file: "+ v)
 		if fh: fh.close()
-
+	"""
 #####################
 ##
 ##				End of class BasisRetrApp
@@ -484,6 +675,10 @@ import pprint
 def ppp(object):
 	"""debugging support: pretty print any object"""
 	pprint.PrettyPrinter().pprint(object)
+
+def escape_win_path_spaces(path):
+	"""turn each space in pathnames into " ".  Used when launching file in host os."""
+	return re.sub(" ","\" \"",path,99)
 
 class StatusBar:
 	def __init__(self, master):
@@ -519,4 +714,7 @@ v3: CSV works.  Instead of scrollable for now, made days in 2 sets of columns-- 
 v4: Cleanup, now saving password scrambled, column heads added, using status bar
 v5: big cleanup, changing save-to folder now updates the ui
 v6: Fixed name collision Bug: now referring to BasisRetr correctly.
+v7: About to integrate with updated basis_retr.py (v6)
+v8: (aligned with basis_retr v7.py): refactored metrics, activities, and sleep downloading correctly, csv + json.  Also got month of activities downloading correctly.  Launching csv files by clicking on file size number.
+v9: (aligned with basis_retr v8): Fixed event handlers for option (drop-down) menus. Date grid now only allows selecting metrics and sleep to download-- changed activity and sleep summary data so that now it only downloads for an entire month (no more day-specific buttons).  Links to files now styled to look like browser hyperlinks. Weekend days now highlighted in yellow.
 """
