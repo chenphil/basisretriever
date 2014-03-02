@@ -10,7 +10,7 @@ import datetime
 # need to comment this out for py2exe?
 #sys.stdout = os.fdopen(sys.stdout.fileno(), 'w', 0)
 
-class BasisRetrApp:
+class BasisRetr:
 	LOGIN_URL = 'https://app.mybasis.com/login'
 	UID_URL = 'https://app.mybasis.com/api/v1/user/me.json'
 	
@@ -23,21 +23,19 @@ class BasisRetrApp:
 			self.savedir = savedir
 			self.userid = userid
 		except Exception, v:
-			print "Didn't get required variable", v
+			print "Didn't get required variable", `v`
 
 	def Login(self):
 		"""Log in to basis website to get session (access) token"""
 		opener = urllib2.build_opener()
 		self.cj = CookieJar()
 		self.opener = urllib2.build_opener(urllib2.HTTPCookieProcessor(self.cj))
-
 		form_data = {'next': 'https://app.mybasis.com',
 			'submit': 'Login',
 			'username': self.loginid,
 			'password': self.passwd}
 		enc_form_data = urllib.urlencode(form_data)
-
-		f = self.opener.open(BasisRetrApp.LOGIN_URL, enc_form_data)
+		f = self.opener.open(BasisRetr.LOGIN_URL, enc_form_data)
 		content = f.read()
 		m = re.search('error_string\s*=\s*"(.+)"', content, re.MULTILINE)
 		if m:
@@ -63,7 +61,7 @@ class BasisRetrApp:
 		if not self.access_token:
 			raise Exception('no token', 'no access token found-may be internet connectivity or bad login info.')
 		self.opener.addheaders = [('X-Basis-Authorization', "OAuth "+self.access_token)]
-		f = self.opener.open(BasisRetrApp.UID_URL)
+		f = self.opener.open(BasisRetr.UID_URL)
 		content = f.read()
 		jresult = json.loads(content)
 		#print json.dumps(jresult)
@@ -95,6 +93,7 @@ class BasisRetrApp:
 		return self.GetJsonData(url)
 
 	def GetJsonData(self, url):
+		print url
 		f = self.opener.open(url)
 		content = f.read()
 		return json.loads(content)
@@ -149,7 +148,7 @@ def main():
 	passwd = 'passwd' in cfg and cfg['passwd'] or 'Mainlab5'
 	savedir = 'savedir' in cfg and cfg['savedir'] or './data'
 	userid = 'userid' in cfg and cfg['userid'] or None
-	b = BasisRetrApp(loginid, passwd, savedir, userid)
+	b = BasisRetr(loginid, passwd, savedir, userid)
 	
 	try:
 		b.Login()
@@ -203,4 +202,5 @@ if __name__ == "__main__":
 	
 """ Version Log
 v0: correctly retrieving metrics and activities.  About to abstract out config saver
+v1: fixed bug: name collision for BasisRetrApp- Changed to BasisRetr.
 """

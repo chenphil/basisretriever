@@ -16,7 +16,7 @@ except ImportError:
 
 CONFIG_FILENAME = 'tk_band_retr.cfg'
 
-# Note: bsaw.py already set python's console output buffer to zero.  Don't do again or crash.
+# Note: basis_retr.py already set python's console output buffer to zero.  Don't do again or crash.
 def qw(s):
 	return tuple(s.split())
 
@@ -314,11 +314,11 @@ under the BSD license. See License.txt for specifics.""")
 		email = self.ui['loginid'].get()
 		passwd = self.ui['passwd'].get()
 		savedir = self.ui['savedir'].get()
-		self.band_retr = BasisRetrApp(email, passwd, savedir, self.userid)
-		try:
-			self.bsaw.Login()
-		except Exception, v:
-			self.Status("Login Error:"+`v`)
+		self.bretr = BasisRetr(email, passwd, savedir, self.userid)
+		#try:
+		self.bretr.Login()
+		#except Exception, v:
+		#	self.Status("Login Error:"+`v`)
 			
 	def OnGetDayData(self, evt):
 		"""Get either metrics or activities json data from Basis website.  For now, button name is how we get the date and type of data to download."""
@@ -333,17 +333,17 @@ under the BSD license. See License.txt for specifics.""")
 		self.Status("getting "+type+" for "+date)
 		# figure out which data to get
 		data = None
-		try:
-			if type == 'metrics':
-				data = self.bsaw.GetMetricsForDay(date)
-				fname = date+"_basis_metrics.json"
-			elif type == 'activities':
-				data = self.bsaw.GetActivitiesForDay(date)
-				fname = date+"_basis_activities.json"
-		except Exception, v:
-			self.Status("Problem getting data from basis website:"+`v`)
+#		try:
+		if type == 'metrics':
+			data = self.bretr.GetMetricsForDay(date)
+			fname = date+"_basis_metrics.json"
+		elif type == 'activities':
+			data = self.bretr.GetActivitiesForDay(date)
+			fname = date+"_basis_activities.json"
+#		except Exception, v:
+#			self.Status("Problem getting data from basis website:"+`v`)
 		if data:
-			self.bsaw.SaveDataForDay(data, fname)
+			self.bretr.SaveDataForDay(data, fname)
 			##$$ clean this up.  Pass entire path to above save method 
 			fpath = os.path.join(os.path.abspath(self.GetUI('savedir')), fname)
 			self.Status("Saved "+type+" at "+fpath)
@@ -367,7 +367,7 @@ under the BSD license. See License.txt for specifics.""")
 		if not os.path.exists(fpath):
 			# download json first
 			self.CheckLogin()
-			json_data = self.bsaw.GetMetricsForDay(date)
+			json_data = self.bretr.GetMetricsForDay(date)
 			print "got json data"
 		else: # just read the data from the exsiting file
 			with open(fpath, "r") as f:
@@ -518,4 +518,5 @@ v3: CSV works.  Instead of scrollable for now, made days in 2 sets of columns-- 
 	Next steps: save password scrambled, add column heads
 v4: Cleanup, now saving password scrambled, column heads added, using status bar
 v5: big cleanup, changing save-to folder now updates the ui
+v6: Fixed name collision Bug: now referring to BasisRetr correctly.
 """
